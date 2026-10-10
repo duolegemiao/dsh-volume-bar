@@ -1,0 +1,65 @@
+{
+  "name": "dsh-volume-bar",
+  "version": "0.4.0",
+  "description": "把 DSH 对话右侧的轮次导航栏变成跟着系统输出音频跳动的音量条（Windows WASAPI loopback）",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings-shell"
+      ],
+      "platform": "web"
+    },
+    "manifestVersion": 1
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "wasapi",
+    "loopback",
+    "audio-visualizer",
+    "windows"
+  ],
+  "author": "duolegemiao",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/duolegemiao/dsh-volume-bar.git"
+  },
+  "homepage": "https://github.com/duolegemiao/dsh-volume-bar#readme",
+  "bugs": {
+    "url": "https://github.com/duolegemiao/dsh-volume-bar/issues"
+  },
+  "os": [
+    "win32"
+  ],
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/audio-levels.py",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "verify.ps1",
+    "dev/demo.html",
+    "docs/*.png"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

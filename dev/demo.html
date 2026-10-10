@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsh-volume-bar · 离线预览</title>
+<style>
+  :root {
+    color-scheme: light;
+    /* DSH 的主题令牌（真机上由应用提供），这里补齐让预览页看起来一样 */
+    --dsw-alias-label-primary: #111;
+    --dsw-alias-label-secondary: #666;
+    --dsw-alias-label-tertiary: #999;
+    --dsw-alias-border-l4: #e2e2e2;
+    --dsw-alias-bg-base: #fff;
+    --dsw-alias-state-business-primary: #4d6bfe;
+    --dsh-composer-height: 96px;
+  }
+  body {
+    margin: 0; font: 13px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #fff; color: #111;
+  }
+  .wrap { padding: 24px 32px; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .muted { color: #777; font-size: 12px; }
+  .status { margin: 12px 0 20px; font-family: Consolas, monospace; font-size: 12px; color: #444; white-space: pre-wrap; }
+  /* Conversation area stand-in. The rail frame is pinned to a known spot so a
+     headless screenshot can measure the tick widths. */
+  .stage { position: relative; width: 720px; height: 420px; border: 1px solid #eee; border-radius: 10px; overflow: hidden; }
+  .stage .composer { position: absolute; left: 0; right: 0; bottom: 0; height: 96px; border-top: 1px solid #f0f0f0; }
+
+  /* --- the same shapes DSH's turn rail uses (hashed names, same rules) --- */
+  .xpvNua_slot { position: absolute; top: 0; left: 0; right: 0; height: 0; }
+  .xpvNua_frame {
+    --turn-rail-band: 324px;
+    top: calc(var(--turn-rail-band) / 2);
+    width: 28px; max-height: 300px;
+    cursor: pointer; position: absolute; right: 12px; transform: translateY(-50%);
+  }
+  .xpvNua_scroller { position: relative; overflow-y: auto; max-height: inherit; }
+  .xpvNua_marks { position: relative; height: 90px; }
+  .xpvNua_mark {
+    cursor: pointer; background: none; border: 0; border-radius: 8px;
+    height: 10px; padding: 0; position: absolute; top: 0; left: 0; right: 0;
+  }
+  .xpvNua_mark::before {
+    background: #d8d8d8; content: ""; transform-origin: 100%;
+    border-radius: 2px; width: 20px; height: 2px;
+    transition: transform .14s, background-color .14s;
+    position: absolute; top: 50%; right: 0; transform: translateY(-50%) scaleX(.6);
+  }
+  .xpvNua_markActive::before { background: #111; transform: translateY(-50%) scaleX(1); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>dsh-volume-bar · 离线预览</h1>
+  <div class="muted">
+    这个页面用 DSH 真实的类名（<code>xpvNua_frame / _marks / _mark</code>）搭了一个假导航栏，
+    然后加载<b>真正的 <code>lib/client.js</code></b>。它证明的是「插件能不能找到并驱动这条导航栏」。
+    加 <code>?host=1</code> 可以改成读真实的系统音量（需要 DSH 在跑）。
+  </div>
+  <div class="status" id="status">初始化…</div>
+
+  <div class="stage">
+    <div class="xpvNua_slot">
+      <div class="xpvNua_frame">
+        <div class="xpvNua_scroller">
+          <div class="xpvNua_marks" id="marks"></div>
+        </div>
+      </div>
+    </div>
+    <div class="composer"></div>
+  </div>
+</div>
+
+<script>
+  // ---- 1. 搭出 8 条刻度（真实 DSH 里每个对话轮次一条） --------------------
+  const MARKS = 8;
+  const marksHost = document.getElementById('marks');
+  for (let i = 0; i < MARKS; i++) {
+    const mark = document.createElement('button');
+    mark.className = 'xpvNua_mark' + (i === MARKS - 1 ? ' xpvNua_markActive' : '');
+    mark.style.top = (i * 11) + 'px';
+    marksHost.appendChild(mark);
+  }
+
+  const params = new URLSearchParams(location.search);
+  const useHost = params.get('host') === '1';
+  const auto = params.get('auto') === '1';
+  const staticBands = params.get('static'); // e.g. ?static=1,.8,.6,.4,.2,0,0,0
+  const status = document.getElementById('status');
+  const log = [];
+  function say(line) { log.push(line); status.textContent = log.join('\n'); }
+
+  // ---- 2. 桩：模块加载器 --------------------------------------------------
+  window.__ModuleLoader__ = { load(spec) { window.__spec = spec; } };
+
+  // 无头浏览器（--dump-dom / --screenshot + --virtual-time-budget）不产出帧，
+  // 所以 requestAnimationFrame 不会回调。?raf=timer 时把它换成定时器，让
+  // 动画循环在虚拟时间里照常推进——这只影响预览页，不影响 DSH 里的真实运行。
+  if (params.get('raf') === 'timer') {
+    window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+    window.cancelAnimationFrame = (id) => clearTimeout(id);
+    say('（rAF 已换成定时器，供无头截图使用）');
+  }
+
+  // ---- 3. 桩：fetch ------------------------------------------------------
+  // 默认给合成电平（低频最响），?static= 时给固定值，?host=1 时转发给真实宿主。
+  const realFetch = window.fetch.bind(window);
+  const STATIC = staticBands ? staticBands.split(',').map(Number) : null;
+  let tick = 0;
+  window.fetch = async (url, options = {}) => {
+    const path = String(url).replace(/^https?:\/\/[^/]+/, '');
+    if (!useHost && !path.startsWith('/volume-bar')) return realFetch(url, options);
+    if (useHost) return realFetch(url.startsWith('http') ? url : 'http://127.0.0.1:19387' + path, options);
+    if (path.endsWith('/hello')) return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    if (path.endsWith('/start')) { say('POST /start → 桩成功'); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
+    if (path.endsWith('/stop')) return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    if (path.endsWith('/levels')) {
+      tick += 1;
+      const bands = STATIC
+        ? STATIC
+        : Array.from({ length: 8 }, (_, i) => (i === 0 ? 0.5 : 0.0008));
+      return { ok: true, status: 200, json: async () => ({ running: true, device: '合成电平（桩）', level: { rms: 0.05, peak: 0.2, bands }, ageMs: 5 }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  // ---- 4. 加载真正的插件 bundle ------------------------------------------
+  let enableSwitch = null; // the settings row's action, captured from the stub slots registry
+  const script = document.createElement('script');
+  script.src = '../lib/client.js';
+  script.onload = () => {
+    if (!window.__spec) { say('❌ bundle 没有注册 factory'); return; }
+    say('✅ bundle 已注册：' + window.__spec.id);
+    const mod = window.__spec.factory((name) => {
+      if (name === 'react/jsx-runtime') return { jsx: (t, p) => ({ type: t, props: p || {} }), jsxs: (t, p) => ({ type: t, props: p || {} }) };
+      if (name === '@deepseek-ai/dsh-client-ui-primitives') return { Switch: (props) => ({ type: 'Switch', props }) };
+      throw new Error('unexpected require(' + name + ')');
+    });
+    if (typeof mod.apply !== 'function') { say('❌ 没有导出 apply()'); return; }
+    const dictionaries = {};
+    const ctx = {
+      logger: { info: (m) => say('   ' + m), warn: (...a) => say('   [warn] ' + a.join(' ')) },
+      effect: (fn) => fn(),
+      locale: {
+        register: (ns, dict) => { dictionaries[ns] = dict; return () => {}; },
+        bind: (ns) => (key) => ((dictionaries[ns] || {}).zh || {})[key] || key,
+      },
+      slots: {
+        inject: (name, fn) => { fn(); return () => {}; },
+        register: (options, Component) => {
+          const injected = options.inject ? options.inject() : {};
+          if (injected.setVolumeBarSetting) enableSwitch = (on) => injected.setVolumeBarSetting({ enabled: on });
+          say('✅ 已注册 ' + options.name + ' / ' + options.id);
+          return () => {};
+        },
+      },
+    };
+    mod.apply(ctx);
+    const found = document.querySelectorAll('.xpvNua_mark').length;
+    say('✅ 找到 ' + found + ' 条刻度');
+    say('✅ 页面上没有浮动按钮：' + (!document.getElementById('dsh-volume-bar-button')));
+    if (auto) setTimeout(() => { if (enableSwitch) { enableSwitch(true); say('（已通过设置项开关打开）'); } }, 150);
+  };
+  script.onerror = () => say('❌ 加载 ../lib/client.js 失败');
+  document.head.appendChild(script);
+
+  // ---- 5. 报告结果（供无头截图之外的人眼/脚本读取） ----------------------
+  window.__report = () => ({
+    bands: STATIC,
+    widths: Array.from(document.querySelectorAll('.xpvNua_mark')).map((el) => el.style.getPropertyValue('--dsh-vb-w') || ''),
+    on: !!document.querySelector('.xpvNua_frame.dsh-vb-on'),
+  });
+</script>
+</body>
+</html>

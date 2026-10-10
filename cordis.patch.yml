@@ -1,0 +1,7 @@
+# dsh-volume-bar bundle patch
+#
+# One row mounts the plugin. The host half spawns the WASAPI loopback helper and
+# serves /volume-bar/*; the browser half decorates the conversation turn rail.
+- insert:
+    - id: volume-bar
+      name: 'dsh-volume-bar'
