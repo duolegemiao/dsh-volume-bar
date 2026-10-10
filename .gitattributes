@@ -1,0 +1,5 @@
+# 统一换行符，避免 Windows / macOS 贡献者之间出现整文件 diff
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.tgz binary
