@@ -44,7 +44,7 @@
 - **导航栏原本的动效全部保留**：当前轮次那条始终是满宽 + 最深色（"我在哪"不会丢），鼠标悬停某条时它照样放大到满宽（约 140ms 的缓动）并弹出该轮的预览卡片，键盘 focus 也照旧。
 - 静音时刻度停在 0.5 倍宽度（导航栏自己的默认是 0.6），所以没放音乐时它看起来仍然是原来那条导航栏。
 - **所有设置都会记住**（localStorage）：开关、三个旋钮、下次打开 DSH 自动接着跑。
-- **空对话也不会没反应**：如果这个会话还没有任何轮次（导航栏是空的），插件会在同一位置自己画一条 8 段兜底音量条，照样跟着音乐跳。
+- **新对话什么都不画**：会话还没有任何轮次时导航栏是空的，插件不会自己在页面上摆一条音量条——它是挂在导航栏上的小彩蛋，不是一层覆盖物。
 - **跨版本不会变砖**：如果某个 DSH 版本没有 `settings.section` 可挂，插件会自动退化成一个角落小按钮，而不是完全没法开启。
 
 ### 三个旋钮背后是什么
@@ -100,11 +100,14 @@ node "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pnpm\b
 签好之后用 CDP 塞进无头 Edge（`Network.setCookie` → `Page.navigate`），就能拿到完整页面。实测结论：
 
 ```
-probe (home):        hasButton: true, hasStyle: true          ← 插件在真实页面里挂上了
-fallback ladder:     meterClass: "dsh-vb-meter dsh-vb-visible" ← 空会话时兜底音量条出现
-real turn rail:      markCount: 4, markClass: "xpvNua_mark"
+settings nav:        ["通用设置","模型","内置插件","Agent 预设","音量条","侧边卡片"] ← 独立分栏
+settings page:       rowCount 5（开关 + 灵敏度 / 幅度 / 速度 + 恢复默认）
+after toggle:        对话音量条 → "运行中 · 输出设备: …"，checked: "true"
+real turn rail:      markCount 17, markClass: "xpvNua_mark"
                      frameClass: "xpvNua_frame dsh-vb-on"      ← 真实导航栏被接管
-                     widths: 0.160 ×4（静音时停在静止长度）
+                     widths: 0.500 ×16, 1.000（当前轮次）
+hover:               width 0.502 → 1.000（放大）→ 移开后 0.502
+new conversation:    页面上不新增任何元素（没有兜底音量条）
 ```
 
 顺带一个坑：**无头 Chrome/Edge 没有真实音频输出**（`AudioContext` 播放不会进入系统混音器），所以「放音乐看它跳」这一步在无头环境里做不了，只能在真机上看。

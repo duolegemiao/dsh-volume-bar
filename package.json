@@ -1,6 +1,6 @@
 {
   "name": "dsh-volume-bar",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "把 DSH 对话右侧的轮次导航栏变成跟着系统输出音频跳动的音量条（Windows WASAPI loopback）",
   "type": "module",
   "main": "lib/index.js",
