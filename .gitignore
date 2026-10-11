@@ -5,6 +5,8 @@
 node_modules/
 .venv/
 venv/
+pip/
+__pycache__/
 
 # 编辑器 / 系统
 .vscode/

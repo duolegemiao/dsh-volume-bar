@@ -23,6 +23,12 @@
   h1 { font-size: 15px; margin: 0 0 4px; }
   .muted { color: #777; font-size: 12px; }
   .status { margin: 12px 0 20px; font-family: Consolas, monospace; font-size: 12px; color: #444; white-space: pre-wrap; }
+  .modes { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 16px; }
+  .modes button {
+    font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 8px; cursor: pointer;
+    color: #555; background: #fff; border: 1px solid #ddd;
+  }
+  .modes button[aria-pressed="true"] { color: #4d6bfe; border-color: #4d6bfe; }
   /* Conversation area stand-in. The rail frame is pinned to a known spot so a
      headless screenshot can measure the tick widths. */
   .stage { position: relative; width: 720px; height: 420px; border: 1px solid #eee; border-radius: 10px; overflow: hidden; }
@@ -49,6 +55,7 @@
     position: absolute; top: 50%; right: 0; transform: translateY(-50%) scaleX(.6);
   }
   .xpvNua_markActive::before { background: #111; transform: translateY(-50%) scaleX(1); }
+  .xpvNua_mark:focus-visible::before { background: #4d6bfe; transform: translateY(-50%) scaleX(1); }
 </style>
 </head>
 <body>
@@ -59,14 +66,17 @@
     然后加载<b>真正的 <code>lib/client.js</code></b>。它证明的是「插件能不能找到并驱动这条导航栏」。
     加 <code>?host=1</code> 可以改成读真实的系统音量（需要 DSH 在跑）。
   </div>
+  <div class="modes" id="modes"></div>
   <div class="status" id="status">初始化…</div>
 
   <div class="stage">
     <div class="xpvNua_slot">
       <div class="xpvNua_frame">
-        <div class="xpvNua_scroller">
-          <div class="xpvNua_marks" id="marks"></div>
-        </div>
+        <nav class="xpvNua_frame" aria-label="对话轮次导航" style="position:static;transform:none;width:auto;max-height:none">
+          <div class="xpvNua_scroller">
+            <div class="xpvNua_marks" id="marks"></div>
+          </div>
+        </nav>
       </div>
     </div>
     <div class="composer"></div>
@@ -74,20 +84,47 @@
 </div>
 
 <script>
-  // ---- 1. 搭出 8 条刻度（真实 DSH 里每个对话轮次一条） --------------------
-  const MARKS = 8;
-  const marksHost = document.getElementById('marks');
-  for (let i = 0; i < MARKS; i++) {
-    const mark = document.createElement('button');
-    mark.className = 'xpvNua_mark' + (i === MARKS - 1 ? ' xpvNua_markActive' : '');
-    mark.style.top = (i * 11) + 'px';
-    marksHost.appendChild(mark);
+  // ---- 0. 合成素材：真实变化的频段序列，而不是固定值 ----------------------
+  // 每帧按「低频鼓点 + 中频旋律 + 高频泛音」叠加，让动效验证的是跟随变化，
+  // 而不是只看宽度有没有变。
+  function synthFrame(t) {
+    const beat = Math.max(0, Math.sin(t * Math.PI * 2 * 2.0)) ** 3;      // 2 Hz 鼓点
+    const melody = 0.5 + 0.5 * Math.sin(t * 0.9);
+    const sweep = (t * 0.25) % 1;
+    return [
+      0.12 + 0.85 * beat,
+      0.10 + 0.55 * beat * melody,
+      0.08 + 0.45 * melody,
+      0.06 + 0.35 * Math.sin(t * 1.7 + 1),
+      0.05 + 0.30 * Math.sin(t * 2.3 + 2),
+      0.04 + 0.25 * sweep,
+      0.03 + 0.20 * Math.sin(t * 3.1 + 3),
+      0.02 + 0.15 * Math.sin(t * 4.3 + 4),
+    ].map((value) => Math.max(0, Math.min(1, value)));
   }
 
+  // ---- 1. 搭出刻度（真实 DSH 里每个对话轮次一条） -------------------------
   const params = new URLSearchParams(location.search);
+  const MARKS = Number(params.get('marks') ?? 8);
+  const marksHost = document.getElementById('marks');
+  const tickNodes = [];
+  function buildTicks(count) {
+    marksHost.textContent = '';
+    tickNodes.length = 0;
+    for (let i = 0; i < count; i++) {
+      const mark = document.createElement('button');
+      mark.className = 'xpvNua_mark' + (i === count - 1 ? ' xpvNua_markActive' : '');
+      mark.dataset.index = String(i);
+      if (i === count - 1) mark.setAttribute('aria-current', 'true');
+      mark.style.top = (i * 11) + 'px';
+      marksHost.appendChild(mark);
+      tickNodes.push(mark);
+    }
+  }
+  buildTicks(MARKS);
+
   const useHost = params.get('host') === '1';
   const auto = params.get('auto') === '1';
-  const staticBands = params.get('static'); // e.g. ?static=1,.8,.6,.4,.2,0,0,0
   const status = document.getElementById('status');
   const log = [];
   function say(line) { log.push(line); status.textContent = log.join('\n'); }
@@ -104,30 +141,85 @@
     say('（rAF 已换成定时器，供无头截图使用）');
   }
 
-  // ---- 3. 桩：fetch ------------------------------------------------------
-  // 默认给合成电平（低频最响），?static= 时给固定值，?host=1 时转发给真实宿主。
+  // ---- 3. 桩：fetch（协议 v2：lease + generation + seq + ageMs） ----------
   const realFetch = window.fetch.bind(window);
-  const STATIC = staticBands ? staticBands.split(',').map(Number) : null;
+  const mode = params.get('mode') ?? 'music';
   let tick = 0;
+  let seq = 0;
+  let frozen = null;
+  const leases = new Set();
+
+  function payloadFor(path, options = {}) {
+    if (path.startsWith('/volume-bar/start')) {
+      const body = JSON.parse(options.body ?? '{}');
+      if (body.clientId) leases.add(body.clientId);
+      return { ok: true, leases: leases.size, state: { running: true, captureState: 'capturing' } };
+    }
+    if (path.startsWith('/volume-bar/stop') || path.startsWith('/volume-bar/bye')) {
+      leases.clear();
+      return { ok: true, leases: 0, stopped: true };
+    }
+    if (path.startsWith('/volume-bar/hello')) {
+      return { ok: true, protocolVersion: 2, leaseTtlMs: 90000, state: { running: false } };
+    }
+    if (path.startsWith('/volume-bar/levels')) {
+      tick += 1;
+      const bands = frozen ?? synthFrame(tick / 46);
+      if (!frozen) seq += 1;
+      return {
+        running: true,
+        protocolVersion: 2,
+        captureState: 'capturing',
+        generation: 'demo-gen',
+        frameGeneration: 'demo-gen',
+        seq: frozen ? 99 : seq,
+        ageMs: frozen ? 60000 : 4,
+        analysisMode: 'numpy-fft',
+        device: { mode: 'system-default', name: '合成素材（离线桩）', defaultName: '合成素材（离线桩）', index: 3, isDefault: true },
+        devices: [{ index: 3, name: '合成素材（离线桩）', rate: 48000, channels: 2 }],
+        level: { rms: Math.max(...bands), peak: Math.max(...bands), bands },
+      };
+    }
+    return { ok: false, error: 'not found' };
+  }
+
   window.fetch = async (url, options = {}) => {
     const path = String(url).replace(/^https?:\/\/[^/]+/, '');
     if (!useHost && !path.startsWith('/volume-bar')) return realFetch(url, options);
     if (useHost) return realFetch(url.startsWith('http') ? url : 'http://127.0.0.1:19387' + path, options);
-    if (path.endsWith('/hello')) return { ok: true, status: 200, json: async () => ({ ok: true }) };
-    if (path.endsWith('/start')) { say('POST /start → 桩成功'); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
-    if (path.endsWith('/stop')) return { ok: true, status: 200, json: async () => ({ ok: true }) };
-    if (path.endsWith('/levels')) {
-      tick += 1;
-      const bands = STATIC
-        ? STATIC
-        : Array.from({ length: 8 }, (_, i) => (i === 0 ? 0.5 : 0.0008));
-      return { ok: true, status: 200, json: async () => ({ running: true, device: '合成电平（桩）', level: { rms: 0.05, peak: 0.2, bands }, ageMs: 5 }) };
-    }
-    return { ok: false, status: 404, json: async () => ({}) };
+    const body = payloadFor(path, options);
+    if (body.ok === false) return { ok: false, status: 404, json: async () => body };
+    return { ok: true, status: 200, json: async () => body };
   };
 
-  // ---- 4. 加载真正的插件 bundle ------------------------------------------
-  let enableSwitch = null; // the settings row's action, captured from the stub slots registry
+  // ---- 4. 场景切换：正常 / 陈旧帧 / 宿主离线 -----------------------------
+  const scenarios = {
+    music: { label: '正常播放', apply: () => { frozen = null; } },
+    stale: { label: '陈旧帧（F05）', apply: () => { frozen = [0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9]; } },
+    silent: { label: '静音', apply: () => { frozen = [0, 0, 0, 0, 0, 0, 0, 0]; } },
+  };
+  const modesHost = document.getElementById('modes');
+  let current = mode in scenarios ? mode : 'music';
+  for (const [key, scenario] of Object.entries(scenarios)) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = scenario.label;
+    button.setAttribute('aria-pressed', String(key === current));
+    button.addEventListener('click', () => {
+      current = key;
+      scenarios[key].apply();
+      for (const other of modesHost.children) other.setAttribute('aria-pressed', String(other === button));
+      say(`（场景：${scenario.label}）`);
+    });
+    modesHost.appendChild(button);
+  }
+  scenarios[current].apply();
+
+  // 换刻度数量（验证 F16 的少轮次映射）：?marks=2 / ?marks=1
+  if (params.get('marks')) say(`（刻度数量：${MARKS}）`);
+
+  // ---- 5. 加载真正的插件 bundle ------------------------------------------
+  let injected = null;
   const script = document.createElement('script');
   script.src = '../lib/client.js';
   script.onload = () => {
@@ -135,6 +227,15 @@
     say('✅ bundle 已注册：' + window.__spec.id);
     const mod = window.__spec.factory((name) => {
       if (name === 'react/jsx-runtime') return { jsx: (t, p) => ({ type: t, props: p || {} }), jsxs: (t, p) => ({ type: t, props: p || {} }) };
+      if (name === 'react') {
+        return {
+          useRef: (initial) => ({ current: initial }),
+          useState: (initial) => [initial, () => {}],
+          useEffect: () => {},
+          useSyncExternalStore: (subscribe, getSnapshot) => getSnapshot(),
+          createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
+        };
+      }
       if (name === '@deepseek-ai/dsh-client-ui-primitives') return { Switch: (props) => ({ type: 'Switch', props }) };
       throw new Error('unexpected require(' + name + ')');
     });
@@ -149,9 +250,9 @@
       },
       slots: {
         inject: (name, fn) => { fn(); return () => {}; },
-        register: (options, Component) => {
-          const injected = options.inject ? options.inject() : {};
-          if (injected.setVolumeBarSetting) enableSwitch = (on) => injected.setVolumeBarSetting({ enabled: on });
+        register: (options) => {
+          const value = options.inject ? options.inject() : {};
+          if (value.setVolumeBarSetting) injected = value;
           say('✅ 已注册 ' + options.name + ' / ' + options.id);
           return () => {};
         },
@@ -161,16 +262,18 @@
     const found = document.querySelectorAll('.xpvNua_mark').length;
     say('✅ 找到 ' + found + ' 条刻度');
     say('✅ 页面上没有浮动按钮：' + (!document.getElementById('dsh-volume-bar-button')));
-    if (auto) setTimeout(() => { if (enableSwitch) { enableSwitch(true); say('（已通过设置项开关打开）'); } }, 150);
+    if (auto) setTimeout(() => { if (injected) { injected.setVolumeBarSetting({ enabled: true }); say('（已通过设置项开关打开）'); } }, 150);
   };
   script.onerror = () => say('❌ 加载 ../lib/client.js 失败');
   document.head.appendChild(script);
 
-  // ---- 5. 报告结果（供无头截图之外的人眼/脚本读取） ----------------------
+  // ---- 6. 报告结果（供无头截图之外的人眼/脚本读取） ----------------------
   window.__report = () => ({
-    bands: STATIC,
-    widths: Array.from(document.querySelectorAll('.xpvNua_mark')).map((el) => el.style.getPropertyValue('--dsh-vb-w') || ''),
-    on: !!document.querySelector('.xpvNua_frame.dsh-vb-on'),
+    mode: current,
+    widths: tickNodes.map((el) => el.style.getPropertyValue('--dsh-vb-w') || ''),
+    on: !!document.querySelector('.xpvNua_frame.dsh-vb-on, [data-dsh-vb-rail].dsh-vb-on'),
+    status: injected ? injected.useVolumeBar().status : 'not-mounted',
+    seq: injected ? injected.useVolumeBar().seq : null,
   });
 </script>
 </body>
