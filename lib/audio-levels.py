@@ -51,7 +51,7 @@ IDLE_EMIT_SECONDS = 0.5
 MAX_BUFFER_SECONDS = 4.0
 STALL_REOPEN_SECONDS = 3.0
 STREAM_OPEN_ATTEMPTS = 3
-MODULE_VERSION = "0.7.0"
+MODULE_VERSION = "0.7.1"
 
 try:  # NumPy is optional: without it a decimated Goertzel bank runs instead.
     import numpy as _np
