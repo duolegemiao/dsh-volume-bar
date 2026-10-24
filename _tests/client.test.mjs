@@ -453,6 +453,25 @@ await scenario('F15 numeric', { stored: { sensitivity: 1.7, amplitude: -3, speed
 })
 
 // ---------------------------------------------------------------------------
+// 0.7.2 — a stored null device means "follow the default", not "pin device 0"
+// ---------------------------------------------------------------------------
+await scenario('0.7.2 device', { stored: { schemaVersion: 2, enabled: false, deviceIndex: null } }, async (realm) => {
+  check(
+    '0.7.2: a stored null device index stays null (Number(null) is 0)',
+    realm.state().deviceIndex === null,
+    JSON.stringify({ deviceIndex: realm.state().deviceIndex }),
+  )
+})
+
+await scenario('0.7.2 device pin', { stored: { schemaVersion: 2, enabled: false, deviceIndex: 0 } }, async (realm) => {
+  check(
+    '0.7.2: an explicit device 0 pin is kept',
+    realm.state().deviceIndex === 0,
+    JSON.stringify({ deviceIndex: realm.state().deviceIndex }),
+  )
+})
+
+// ---------------------------------------------------------------------------
 // F12 — the envelope follows time, not frames (P1)
 // ---------------------------------------------------------------------------
 async function settleWidthForFrameStep(stepMs) {

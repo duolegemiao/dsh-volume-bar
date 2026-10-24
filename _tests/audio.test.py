@@ -74,6 +74,61 @@ def bits(rate: int) -> float:
     return module.WINDOW_SAMPLES / rate
 
 
+class FakeAudio:
+    """Minimal PyAudio stand-in for the device-selection checks."""
+
+    def __init__(self, loopbacks, default_index, default_output):
+        self.loopbacks = set(loopbacks)
+        self.default_index = default_index
+        self.default_output = default_output
+        self.count = max(max(self.loopbacks) if self.loopbacks else 0, default_output) + 1
+
+    def get_device_count(self):
+        return self.count
+
+    def get_device_info_by_index(self, index):
+        if index >= self.count:
+            raise OSError("invalid device index")
+        loopback = index in self.loopbacks
+        name = f"Device {index} [Loopback]" if loopback else f"Device {index}"
+        return {
+            "index": index,
+            "name": name,
+            "isLoopbackDevice": loopback,
+            "defaultSampleRate": 48000.0,
+            "maxInputChannels": 2,
+        }
+
+    def get_host_api_info_by_type(self, _type):
+        return {"defaultOutputDevice": self.default_output}
+
+    def get_default_wasapi_loopback(self):
+        return self.get_device_info_by_index(self.default_index)
+
+
+def device_checks() -> None:
+    """A pinned index that vanished must fall back instead of killing capture."""
+    print("\n[9] device selection survives a stale pinned index")
+    fake = FakeAudio(loopbacks=[28, 29, 30, 31, 32], default_index=30, default_output=22)
+    info, _default, description = module.pick_device(fake, 0, 0, None)
+    check(
+        f"pinned index 0 (not a loopback) falls back to device {info['index']} ({description['mode']})",
+        info["index"] == 30 and description["mode"] == "pinned-fallback",
+    )
+    info, _default, description = module.pick_device(fake, 0, 30, None)
+    check(f"a valid pin is honoured ({description['mode']})", info["index"] == 30 and description["mode"] == "pinned-index")
+    info, _default, description = module.pick_device(fake, 0, None, None)
+    check(f"no pin follows the default ({description['mode']})", info["index"] == 30 and description["mode"] == "system-default")
+    info, _default, description = module.pick_device(fake, 0, None, "nonexistent device")
+    check(f"a missing requested name follows the default ({description['mode']})", info["index"] == 30)
+    empty = FakeAudio(loopbacks=[], default_index=30, default_output=22)
+    try:
+        module.pick_device(empty, 0, None, None)
+        check("no loopback device at all raises", False, "no error raised")
+    except LookupError:
+        check("no loopback device at all raises LookupError", True)
+
+
 def level_only_checks(rate: int) -> int:
     """The NumPy-less fallback reports a level and repeats it in every band."""
     print("\n[fallback] level-only mode")
@@ -101,6 +156,8 @@ def level_only_checks(rate: int) -> int:
         analyze_fn(frame)
     elapsed = (time.perf_counter() - start) / 200 * 1000.0
     check(f"{elapsed:.3f} ms per window (budget 2 ms; 46 windows/s)", elapsed < 2.0)
+
+    device_checks()
 
     print()
     if FAILURES:
@@ -219,7 +276,7 @@ def main() -> int:
                 abs(fft_result[2][index] - alt_result[2][index]) < 0.06,
             )
 
-    print("\n[9] speed: analysis cost per window")
+    print("\n[10] speed: analysis cost per window")
     noisy = [0.2 * math.sin(i * 12.9898) for i in range(len(tone))]
     analyze_fn, _ = module.make_analyzer(rate, 2)
     frame = module._frame(to_bytes_int16([tone, noisy]), 2, module._np)
@@ -231,6 +288,8 @@ def main() -> int:
     elapsed = (time.perf_counter() - start) / rounds * 1000.0
     budget = 15.0 if module._np is None else 5.0
     check(f"{elapsed:.2f} ms per window (budget {budget} ms; 46 windows/s)", elapsed < budget)
+
+    device_checks()
 
     print()
     if FAILURES:

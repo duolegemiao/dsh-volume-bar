@@ -51,7 +51,7 @@ IDLE_EMIT_SECONDS = 0.5
 MAX_BUFFER_SECONDS = 4.0
 STALL_REOPEN_SECONDS = 3.0
 STREAM_OPEN_ATTEMPTS = 3
-MODULE_VERSION = "0.7.1"
+MODULE_VERSION = "0.7.2"
 
 try:  # NumPy is optional: without it a decimated Goertzel bank runs instead.
     import numpy as _np
@@ -237,16 +237,28 @@ def list_devices(pa) -> list[dict]:
 
 
 def pick_device(pa, wasapi_type: int, forced_index, requested: str | None):
-    """Return (loopback info, default output info, description dict)."""
+    """Return (loopback info, default output info, description dict).
+
+    A pinned index that no longer exists (devices are re-enumerated after reboots
+    and driver updates, so PortAudio indices move) must never kill the capture:
+    fall back to the system default and report why, so the UI can drop the stale
+    pin instead of failing forever.
+    """
     wasapi = pa.get_host_api_info_by_type(wasapi_type)
     default_out = pa.get_device_info_by_index(wasapi["defaultOutputDevice"])
     default_name = default_out["name"]
 
     if forced_index is not None:
+        info = None
         with contextlib.suppress(Exception):
             info = pa.get_device_info_by_index(int(forced_index))
-            if info.get("isLoopbackDevice"):
-                return info, default_out, _describe(info, "pinned-index", default_name)
+        if info is not None and info.get("isLoopbackDevice"):
+            return info, default_out, _describe(info, "pinned-index", default_name)
+        # Not fatal: the hello frame reports mode "pinned-fallback", so the host
+        # and the settings page can drop the stale pin without an error banner.
+        fallback = _default_loopback(pa, default_name, requested)
+        if fallback is not None:
+            return fallback[0], default_out, _describe(fallback[0], "pinned-fallback", default_name)
         raise LookupError(f"loopback device index {forced_index} is not available")
 
     if requested:
@@ -259,17 +271,28 @@ def pick_device(pa, wasapi_type: int, forced_index, requested: str | None):
                 return info, default_out, _describe(info, "pinned-name", default_name)
         warn(f"requested device {requested!r} is unavailable; following the system default")
 
-    try:
-        info = pa.get_default_wasapi_loopback()
-        return info, default_out, _describe(info, "system-default", default_name)
-    except Exception as error:  # noqa: BLE001 - the library raises several types
-        warn(f"default loopback lookup failed ({error}); matching by name instead")
+    fallback = _default_loopback(pa, default_name, None)
+    if fallback is None:
+        raise LookupError("no WASAPI loopback device matched the default output")
+    return fallback[0], default_out, _describe(fallback[0], "system-default", default_name)
 
+
+def _default_loopback(pa, default_name: str, requested: str | None):
+    """Best loopback device for the current default output, or the first one."""
+    with contextlib.suppress(Exception):
+        info = pa.get_default_wasapi_loopback()
+        if info.get("isLoopbackDevice"):
+            return (info,)
     for index in range(pa.get_device_count()):
         info = pa.get_device_info_by_index(index)
         if info.get("isLoopbackDevice") and info["name"].replace(" [Loopback]", "") == default_name:
-            return info, default_out, _describe(info, "system-default", default_name)
-    raise LookupError("no WASAPI loopback device matched the default output")
+            return (info,)
+    # Last resort: any loopback device keeps the meter useful instead of silent.
+    for index in range(pa.get_device_count()):
+        info = pa.get_device_info_by_index(index)
+        if info.get("isLoopbackDevice"):
+            return (info,)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -296,9 +319,14 @@ def _frame(raw: bytes, channels: int, np_module):
 
 def _capture(p, target, channels: int, rate: int, analyze, generation: str, stop_event: threading.Event):
     """Run one stream until it breaks, the host stops us, or the device dies."""
+    # paInt16 is a module-level constant; newer pyaudiowpatch releases no longer
+    # mirror the audio constants on the PyAudio instance.
+    audio_format = getattr(p, "paInt16", None)
+    if audio_format is None:
+        audio_format = getattr(sys.modules[p.__class__.__module__], "paInt16", 8)
     try:
         stream = p.open(
-            format=p.paInt16,
+            format=audio_format,
             channels=channels,
             rate=rate,
             input=True,
