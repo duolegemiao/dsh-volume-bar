@@ -521,6 +521,34 @@ async function settleWidthForFrameStep(stepMs) {
 }
 
 // ---------------------------------------------------------------------------
+// Amplitude — the loud end must use the whole gutter (28px tick / 20px bar),
+// but never more: past 1.4 the scrolling column clips the decoration.
+// ---------------------------------------------------------------------------
+await scenario('amplitude', { stored: { amplitude: 1 } }, async (realm, rail) => {
+  const loud = healthyHandler({ bands: [1, 1, 1, 1, 1, 1, 1, 1] })
+  const silent = healthyHandler({ bands: [0, 0, 0, 0, 0, 0, 0, 0] })
+  realm.net.handler = loud.handler
+  await turnOn(realm)
+  await waitHealthy(realm)
+  await realm.advance(800)
+  const peak = Math.max(...widths(rail))
+  check(
+    'amplitude: a loud band stretches into the whole 28px gutter',
+    peak > 1.2 && peak <= 1.401,
+    `peak=${peak.toFixed(3)} (gutter limit 1.4)`,
+  )
+
+  realm.net.handler = silent.handler
+  await realm.advance(2000)
+  const quiet = Math.max(...widths(rail).slice(0, -1))
+  check(
+    'amplitude: at 100% a silent tick collapses to a stub, so the swing is large',
+    quiet <= 0.2 && peak - quiet > 1.1,
+    `rest=${quiet.toFixed(3)} swing=${(peak - quiet).toFixed(3)}`,
+  )
+})
+
+// ---------------------------------------------------------------------------
 // F16 — band mapping across tick counts (P2)
 // ---------------------------------------------------------------------------
 await scenario('F16', async (realm, rail) => {
